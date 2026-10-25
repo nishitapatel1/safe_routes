@@ -3,3 +3,4 @@ __pycache__/
 .env
 .DS_Store
 cache/
+GEMINI_API_KEY=AQ.Ab8RN6KGshzmVneD3bcQVrL_pfhxDLAGqn4OefD6HyChSW7yzA

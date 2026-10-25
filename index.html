@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AccessRoute AI — Stony Brook Navigation</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body, html { margin: 0; padding: 0; height: 100%; width: 100%; display: flex; overflow: hidden; }
+    
+    /* Sidebar Styling */
+    #sidebar {
+      width: 360px; background: #0f172a; color: #f8fafc; padding: 20px;
+      display: flex; flex-direction: column; gap: 14px; overflow-y: auto; z-index: 1000;
+      box-shadow: 4px 0 15px rgba(0,0,0,0.3);
+    }
+    h1 { font-size: 1.3rem; margin: 0; color: #38bdf8; }
+    p.sub { font-size: 0.82rem; color: #94a3b8; margin: 0; line-height: 1.4; }
+    
+    .instructions {
+      background: #1e293b; padding: 10px 12px; border-radius: 8px;
+      font-size: 0.85rem; border-left: 4px solid #38bdf8;
+    }
+    
+    /* Route Comparison Cards */
+    .card {
+      background: #1e293b; border-radius: 10px; padding: 12px;
+      border-left: 6px solid #64748b; transition: 0.2s;
+    }
+    .card.shortest { border-left-color: #3b82f6; }
+    .card.walking { border-left-color: #f59e0b; }
+    .card.wheelchair { border-left-color: #10b981; }
+    .card-header { display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 0.95rem; margin-bottom: 6px; }
+    .card-stats { font-size: 0.83rem; color: #cbd5e1; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .badge { padding: 2px 7px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; background: #334155; }
+    
+    /* Toggles & Buttons */
+    .controls { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+    label.toggle { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; cursor: pointer; background: #1e293b; padding: 8px 10px; border-radius: 6px; }
+    button {
+      background: #38bdf8; color: #0f172a; border: none; padding: 10px;
+      border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 0.9rem;
+    }
+    button:hover { background: #0284c7; color: white; }
+    
+    #map { flex: 1; height: 100%; }
+    .credit { font-size: 0.72rem; color: #64748b; margin-top: auto; }
+  </style>
+</head>
+<body>
+
+  <div id="sidebar">
+    <h1>🦽 AccessRoute AI</h1>
+    <p class="sub">Powered by OpenStreetMap, NYS 12-in Aerial Imagery & Google Gemini Vision</p>
+
+    <div class="instructions" id="click-status">
+      👆 <b>Click anywhere on the map</b> to set your <b>START</b> point, then click again for <b>END</b>.
+    </div>
+
+    <div class="controls">
+      <label class="toggle">
+        <input type="checkbox" id="toggle-aerial" checked onchange="toggleAerial()" />
+        🛰️ Show NYS 12-inch Aerial Imagery
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="toggle-gemini" onchange="toggleGemini()" />
+        ✨ Highlight Gemini AI Segments (Cyan)
+      </label>
+    </div>
+
+    <div id="results">
+      <div class="card shortest" id="card-shortest">
+        <div class="card-header"><span>🔵 Shortest Route</span><span class="badge" id="dist-shortest">-- m</span></div>
+        <div class="card-stats" id="stats-shortest">Waiting for points...</div>
+      </div>
+      <div class="card walking" id="card-walking" style="margin-top:10px;">
+        <div class="card-header"><span>🟠 Walking Route</span><span class="badge" id="dist-walking">-- m</span></div>
+        <div class="card-stats" id="stats-walking">Waiting for points...</div>
+      </div>
+      <div class="card wheelchair" id="card-wheelchair" style="margin-top:10px;">
+        <div class="card-header"><span>🟢 Wheelchair Route</span><span class="badge" id="dist-wheelchair">-- m</span></div>
+        <div class="card-stats" id="stats-wheelchair">Waiting for points...</div>
+      </div>
+    </div>
+
+    <button onclick="loadDemoPreset()">🎯 Load Demo Route (Stony Brook)</button>
+
+    <div class="credit">
+      Imagery credit: NYS ITS Geospatial Services.<br/>Map data © OpenStreetMap contributors.
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <script>
+    // 1. Initialize Map centered on Stony Brook University
+    const map = L.map('map').setView([40.9155, -73.1250], 16);
+
+    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', {
+        maxZoom: 20,
+        attribution: '&copy; OpenStreetMap France | Map data &copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+    // 2. NYS ITS Geospatial Services Aerial WMS Layer
+    const nysAerialLayer = L.tileLayer.wms('https://orthos.its.ny.gov/arcgis/rest/services/wms/Latest/MapServer/WMSServer', {
+      layers: '0',
+      format: 'image/png',
+      transparent: false,
+      maxZoom: 20,
+      opacity: 0.85,
+      attribution: 'NYS ITS Geospatial Services'
+    }).addTo(map);
+
+    let startMarker = null, endMarker = null;
+    let routeLayers = {};
+    let geminiLayer = null;
+    let settingStart = true;
+
+    const COLORS = { shortest: '#3b82f6', walking: '#f59e0b', wheelchair: '#10b981' };
+    const WEIGHTS = { shortest: 4, walking: 6, wheelchair: 8 };
+
+    function toggleAerial() {
+      const checked = document.getElementById('toggle-aerial').checked;
+      if (checked) nysAerialLayer.addTo(map);
+      else map.removeLayer(nysAerialLayer);
+    }
+
+    async function toggleGemini() {
+      const checked = document.getElementById('toggle-gemini').checked;
+      if (!checked) {
+        if (geminiLayer) map.removeLayer(geminiLayer);
+        return;
+      }
+      const res = await fetch('/gemini-segments');
+      const data = await res.json();
+      geminiLayer = L.geoJSON(data, {
+        style: { color: '#00ffff', weight: 4, opacity: 0.85 },
+        onEachFeature: (f, layer) => {
+          layer.bindTooltip(`<b>Gemini AI Classified:</b> ${f.properties.surface}<br>Penalty: ${f.properties.penalty}`);
+        }
+      }).addTo(map);
+    }
+
+    // 3. Click on Map to set Start & End
+    map.on('click', (e) => {
+      if (settingStart) {
+        if (startMarker) map.removeLayer(startMarker);
+        startMarker = L.marker(e.latlng).addTo(map).bindPopup('<b>START</b>').openPopup();
+        document.getElementById('click-status').innerHTML = '📍 <b>START set!</b> Now click your <b>END</b> destination.';
+        settingStart = false;
+      } else {
+        if (endMarker) map.removeLayer(endMarker);
+        endMarker = L.marker(e.latlng).addTo(map).bindPopup('<b>END</b>').openPopup();
+        document.getElementById('click-status').innerHTML = '✅ <b>Calculating all 3 routes...</b> (Click map to start over)';
+        settingStart = true;
+        calculateAllRoutes(startMarker.getLatLng(), endMarker.getLatLng());
+      }
+    });
+
+    // 4. Call FastAPI /route for all 3 modes
+    async function calculateAllRoutes(start, end) {
+      // Clear previous routes
+      Object.values(routeLayers).forEach(layer => map.removeLayer(layer));
+      routeLayers = {};
+
+      for (const mode of ['shortest', 'walking', 'wheelchair']) {
+        const url = `/route?start_lat=${start.lat}&start_lon=${start.lng}&end_lat=${end.lat}&end_lon=${end.lng}&mode=${mode}`;
+        try {
+          const res = await fetch(url);
+          const data = await res.json();
+
+          if (data.error) {
+            document.getElementById(`dist-${mode}`).innerText = 'Blocked';
+            document.getElementById(`stats-${mode}`).innerHTML = `<span style="color:#f87171;">🚫 No safe path</span>`;
+            continue;
+          }
+
+          const p = data.properties;
+          document.getElementById(`dist-${mode}`).innerText = `${p.meters} m`;
+          document.getElementById(`stats-${mode}`).innerHTML = `
+            <div>Penalty: <b>${p.avg_penalty}</b></div>
+            <div>Stairs: <b>${p.has_steps ? '⚠️ Yes' : '✅ No'}</b></div>
+            <div style="grid-column: span 2; color:#38bdf8;">✨ Gemini verified segments: <b>${p.gemini_count}</b></div>
+          `;
+
+          routeLayers[mode] = L.geoJSON(data, {
+            style: { color: COLORS[mode], weight: WEIGHTS[mode], opacity: 0.9 }
+          }).addTo(map);
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      document.getElementById('click-status').innerHTML = '✅ <b>Routes loaded!</b> Click anywhere on map to pick a new START.';
+    }
+
+    // 5. Preset button using your coordinates from routeTest.py
+    function loadDemoPreset() {
+      const s = L.latLng(40.919929, -73.128458);
+      const e = L.latLng(40.915888, -73.125807);
+      if (startMarker) map.removeLayer(startMarker);
+      if (endMarker) map.removeLayer(endMarker);
+      startMarker = L.marker(s).addTo(map).bindPopup('<b>START</b>');
+      endMarker = L.marker(e).addTo(map).bindPopup('<b>END</b>');
+      map.fitBounds(L.latLngBounds(s, e), { padding: [50, 50] });
+      calculateAllRoutes(s, e);
+    }
+
+    // Load preset automatically on startup so it looks great immediately
+    loadDemoPreset();
+  </script>
+</body>
+</html>
