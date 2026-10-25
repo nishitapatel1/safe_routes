@@ -15,8 +15,10 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 COSTS = {
     "shortest":   "length",
     "walking":    "length * (1 + 2 * integrity_penalty)",
+    "safer":      "length * (1 + 2 * integrity_penalty + 2 * lighting_penalty)",
     "wheelchair": "CASE WHEN wheelchair_blocked THEN -1 "
                   "ELSE length * (1 + 2 * integrity_penalty) END",
+    
 }
 
 ROUTE_SQL = """

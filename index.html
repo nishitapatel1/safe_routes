@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Safe Routes</title>
+  <!-- Leaflet = free map library -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    #map { height: 100vh; }
+    #panel {
+      position: absolute; top: 10px; right: 10px; z-index: 1000;
+      background: white; padding: 12px; border-radius: 8px; width: 250px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="panel">
+    <b>Click the map to set start, then end.</b>
+    <div id="results"></div>
+    <button onclick="reset()">Reset</button>
+  </div>
+
+<script>
+const API = "http://127.0.0.1:8000";
+
+// start the map centered on campus
+const map = L.map("map").setView([40.9126, -73.1234], 16);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: "&copy; OpenStreetMap contributors"
+}).addTo(map);
+
+// each mode gets its own color (shortest is dashed so overlapping routes stay visible)
+const MODES = {
+    safer: { color: "#f9a825", label: "Safer at night" },
+  shortest:   { color: "#888888", label: "Shortest", dash: "6 8" },
+  walking:    { color: "#2e7d32", label: "Best path (walking)" },
+  wheelchair: { color: "#1565c0", label: "Wheelchair" },
+};
+
+let points = [];   // the two clicked spots
+let layers = [];   // everything we drew, so reset can remove it
+
+map.on("click", (e) => {
+  if (points.length === 2) reset();   // a third click starts over
+  points.push(e.latlng);
+  layers.push(L.marker(e.latlng).addTo(map));
+  if (points.length === 2) drawRoutes();
+});
+
+async function drawRoutes() {
+  const [a, b] = points;
+  const results = document.getElementById("results");
+  results.innerHTML = "Finding routes...";
+  let html = "";
+
+  // ask our API for each mode, then draw it
+  for (const [mode, style] of Object.entries(MODES)) {
+    const url = `${API}/route?start_lat=${a.lat}&start_lon=${a.lng}` +
+                `&end_lat=${b.lat}&end_lon=${b.lng}&mode=${mode}`;
+    const data = await (await fetch(url)).json();
+
+    if (data.error) {
+      html += `<p>${style.label}: ${data.error}</p>`;
+      continue;
+    }
+
+    layers.push(L.geoJSON(data, {
+      style: { color: style.color, weight: 5, opacity: 0.8, dashArray: style.dash }
+    }).addTo(map));
+
+    const p = data.properties;
+    html += `<p style="color:${style.color}"><b>${style.label}</b><br>
+             ${p.meters} m · penalty ${p.avg_penalty} · ${p.has_steps ? "has stairs" : "no stairs"}</p>`;
+  }
+  results.innerHTML = html;
+}
+
+function reset() {
+  layers.forEach((layer) => map.removeLayer(layer));
+  layers = [];
+  points = [];
+  document.getElementById("results").innerHTML = "";
+}
+</script>
+</body>
+</html>
